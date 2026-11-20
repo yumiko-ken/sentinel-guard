@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel — Token Risk Guard</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: #0b0f14; color: #e6edf3; line-height: 1.5; }
+  main { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 2rem; margin: 0 0 4px; }
+  h1 .shield { color: #58a6ff; }
+  .tagline { color: #9da7b3; margin: 0 0 24px; max-width: 640px; }
+  form { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+  select, input, button { font: inherit; border-radius: 8px; border: 1px solid #2b3644;
+    background: #11161d; color: #e6edf3; padding: 10px 12px; }
+  input { flex: 1 1 340px; font-family: ui-monospace, monospace; }
+  button { cursor: pointer; background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+  button.secondary { background: #11161d; border-color: #2b3644; color: #9da7b3; font-weight: 500; }
+  button:disabled { opacity: .55; cursor: wait; }
+  .examples { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; }
+  .card { background: #11161d; border: 1px solid #2b3644; border-radius: 12px; padding: 18px; margin-top: 18px; }
+  .verdict { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  .score { font-size: 2.6rem; font-weight: 800; line-height: 1; }
+  .band { font-size: 1.15rem; font-weight: 700; letter-spacing: .04em; }
+  .LOWER { color: #3fb950; } .MODERATE { color: #d29922; } .HIGH { color: #f0883e; } .EXTREME { color: #f85149; }
+  .NOT_A_CONTRACT { color: #f85149; }
+  .meta { color: #9da7b3; font-size: .9rem; }
+  h2 { font-size: 1.05rem; margin: 22px 0 8px; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  li { margin: 4px 0; }
+  .sev { display: inline-block; min-width: 62px; text-align: center; font-size: .72rem; font-weight: 700;
+    border-radius: 999px; padding: 2px 8px; margin-right: 8px; vertical-align: 1px; text-transform: uppercase; }
+  .sev-high { background: #3d1d1d; color: #f85149; }
+  .sev-medium { background: #3a2f14; color: #d29922; }
+  .sev-low { background: #1d2a3a; color: #58a6ff; }
+  .sev-info { background: #1c242e; color: #9da7b3; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #223041; vertical-align: top; }
+  th { color: #9da7b3; font-weight: 600; width: 220px; }
+  td { font-family: ui-monospace, monospace; word-break: break-all; }
+  .deduct td { font-family: inherit; }
+  .deduct td.pts { font-family: ui-monospace, monospace; color: #f85149; white-space: nowrap; }
+  .error { color: #f85149; }
+  footer { margin-top: 36px; color: #6e7b8a; font-size: .85rem; border-top: 1px solid #223041; padding-top: 14px; }
+  code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="shield">🛡</span> Sentinel — Token Risk Guard</h1>
+  <p class="tagline">A wallet-security agent that reads live on-chain state and exposes the owner powers
+     hiding inside an EVM token contract — mint, pause, blacklist, fee control, upgradeability —
+     as a transparent 0–100 risk score pinned to a block number, with the raw evidence attached.</p>
+
+  <form id="scan-form">
+    <select id="chain">
+      <option value="bsc">BNB Smart Chain</option>
+      <option value="ethereum">Ethereum</option>
+    </select>
+    <input id="token" placeholder="Token contract address (0x…)" spellcheck="false" autocomplete="off">
+    <button id="scan-btn" type="submit">Scan</button>
+  </form>
+  <div class="examples">
+    <button class="secondary" type="button" data-chain="ethereum" data-token="0x664A01238C9ad0Bee5EB5C4cC899e91A4b96e925">Example: LUNOR (Ethereum)</button>
+    <button class="secondary" type="button" data-chain="bsc" data-token="0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c">Example: WBNB (BSC)</button>
+  </div>
+
+  <div id="out"></div>
+
+  <footer>
+    Screening aid only — not financial advice. Every check is reproducible from the pinned block:
+    re-run the same <code>eth_call</code> / <code>eth_getCode</code> / <code>eth_getStorageAt</code>
+    calls at that block and you will get the same evidence. Selector presence is a bytecode heuristic,
+    not a guarantee. Built for the Agent Games Wildcard track.
+  </footer>
+</main>
+
+<script>
+  const out = document.getElementById("out");
+  const btn = document.getElementById("scan-btn");
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  function bandClass(band) {
+    if (!band) return "NOT_A_CONTRACT";
+    return band.split(" ")[0];
+  }
+
+  function render(r) {
+    const t = r.tokenInfo || {};
+    const findings = (r.findings || []).map((f) =>
+      `<li><span class="sev sev-${esc(f.severity)}">${esc(f.severity)}</span>${esc(f.message)}</li>`).join("");
+    const deductions = (r.deductions || []).map((d) =>
+      `<tr><td class="pts">${esc(d.points)}</td><td>${esc(d.rule)}<div class="meta">${esc(d.detail || "")}</div></td></tr>`).join("");
+    const ev = r.evidence || {};
+    const evRows = Object.entries(ev).map(([k, v]) =>
+      `<tr><th>${esc(k)}</th><td>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`).join("");
+    const liq = r.liquidity || {};
+    const head = r.verdict === "NOT_A_CONTRACT"
+      ? `<div class="verdict"><span class="band NOT_A_CONTRACT">NOT A CONTRACT</span></div>`
+      : `<div class="verdict"><span class="score ${bandClass(r.band)}">${esc(r.score)}</span>
+           <span class="band ${bandClass(r.band)}">${esc(r.band)}</span>
+           <span class="meta">risk score / 100</span></div>`;
+    out.innerHTML = `
+      <div class="card">
+        ${head}
+        <p class="meta">${esc(t.name || "?")} (${esc(t.symbol || "?")}) · ${esc(r.chainLabel)} · block
+           <code>${esc(r.blockNumber)}</code> · ${esc(r.scannedAt)}<br>
+           Token: <code>${esc(r.token)}</code></p>
+        <h2>Findings</h2>
+        <ul>${findings || "<li>No findings.</li>"}</ul>
+        ${r.deductions ? `<h2>Score deductions (start 100)</h2>
+          <table class="deduct">${deductions || '<tr><td class="pts">0</td><td>No deductions.</td></tr>'}</table>` : ""}
+        <h2>Evidence (raw values at the pinned block)</h2>
+        <table>
+          <tr><th>totalSupply (raw)</th><td>${esc(t.totalSupplyRaw)}</td></tr>
+          <tr><th>totalSupply (formatted)</th><td>${esc(t.totalSupplyFormatted)}</td></tr>
+          <tr><th>owner</th><td>${esc(r.ownership ? (r.ownership.owner || r.ownership.note) : "")}</td></tr>
+          <tr><th>EIP-1967 implementation</th><td>${esc(r.proxy ? (r.proxy.implementation || "none") : "")}</td></tr>
+          <tr><th>V2 pair</th><td>${esc(liq.pair || liq.status || "")}</td></tr>
+          <tr><th>% of supply in pair</th><td>${esc(liq.pctOfSupplyInPair ?? "—")}</td></tr>
+          <tr><th>owner % of supply</th><td>${esc(r.concentration ? (r.concentration.ownerPctOfSupply ?? "—") : "")}</td></tr>
+          ${evRows}
+        </table>
+      </div>`;
+  }
+
+  async function scan() {
+    const chain = document.getElementById("chain").value;
+    const token = document.getElementById("token").value.trim();
+    btn.disabled = true; btn.textContent = "Scanning…";
+    out.innerHTML = '<div class="card">Reading on-chain state…</div>';
+    try {
+      const res = await fetch(`/api/scan?chain=${encodeURIComponent(chain)}&token=${encodeURIComponent(token)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      render(data);
+    } catch (e) {
+      out.innerHTML = `<div class="card error">Scan failed: ${esc(e.message)}</div>`;
+    } finally {
+      btn.disabled = false; btn.textContent = "Scan";
+    }
+  }
+
+  document.getElementById("scan-form").addEventListener("submit", (e) => { e.preventDefault(); scan(); });
+  document.querySelectorAll("[data-token]").forEach((b) => b.addEventListener("click", () => {
+    document.getElementById("chain").value = b.dataset.chain;
+    document.getElementById("token").value = b.dataset.token;
+    scan();
+  }));
+</script>
+</body>
+</html>
